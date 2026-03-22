@@ -1,99 +1,142 @@
 import logging
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from deep_translator import GoogleTranslator
+from gtts import gTTS
+import os
 
-# --- CONFIGURATION ---
+# --- PRE-CONFIG ---
 TOKEN = "8755517901:AAHTZX9MifygQsJ9NaFg_3NABKhvwBbEYw8"
 ADMIN_ID = 8381570120
+VERSION = "2.0 Pro"
 
-# Logging
+# Logging configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
+# Supported Languages (Commonly used, but system supports 100+)
+LANG_MAP = {
+    "bn": "Bengali 🇧🇩",
+    "en": "English 🇺🇸",
+    "ar": "Arabic 🇸🇦",
+    "hi": "Hindi 🇮🇳",
+    "es": "Spanish 🇪🇸",
+    "fr": "French 🇫🇷",
+    "de": "German 🇩🇪",
+    "it": "Italian 🇮🇹",
+    "ja": "Japanese 🇯🇵",
+    "ru": "Russian 🇷🇺"
+}
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_name = update.effective_user.first_name
-    # Default Target Language: Bengali
-    if 'target_lang' not in context.user_data:
-        context.user_data['target_lang'] = 'bn'
+    user = update.effective_user
+    if 'target' not in context.user_data:
+        context.user_data['target'] = 'bn'
 
-    text = (
-        f"👋 **স্বাগতম বন্ধু {user_name}!**\n\n"
-        f"আমি একটি **Premium AI Translator Bot**।\n"
-        f"যেকোনো টেক্সট আমাকে পাঠাও, আমি অটো-ডিটেক্ট করে সেটি অনুবাদ করে দেব।\n\n"
-        f"⚙️ **বর্তমান টার্গেট ভাষা:** `{context.user_data['target_lang'].upper()}`\n\n"
-        f"নিচের বাটন থেকে ভাষা পরিবর্তন করতে পারো:"
+    welcome_text = (
+        f"👑 *Premium Translator v{VERSION}*\n\n"
+        f"Welcome, *{user.first_name}*!\n"
+        f"I am a professional AI-powered translator developed by *Shimul XD*.\n\n"
+        f"✨ *Current Settings:*\n"
+        f"🔹 Target Language: `{LANG_MAP.get(context.user_data['target'], 'Unknown')}`\n"
+        f"🔹 Engine: `AI Deep-Translate`\n"
+        f"🔹 Auto-Detection: `Enabled` ✅\n\n"
+        f"Simply send me any text, and I will translate it for you instantly!"
     )
-    
-    keyboard = [
-        [InlineKeyboardButton("Bengali 🇧🇩", callback_data='set_bn'),
-         InlineKeyboardButton("English 🇺🇸", callback_data='set_en')],
-        [InlineKeyboardButton("Arabic 🇸🇦", callback_data='set_ar'),
-         InlineKeyboardButton("Hindi 🇮🇳", callback_data='set_hi')],
-        [InlineKeyboardButton("Spanish 🇪🇸", callback_data='set_es'),
-         InlineKeyboardButton("French 🇫🇷", callback_data='set_fr')]
-    ]
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("Change Language 🌐", callback_data='change_lang')],
+        [InlineKeyboardButton("Support 👨‍💻", url="https://t.me/ShimulXD")]
+    ]
+    await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def change_lang_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    lang_code = query.data.replace('set_', '')
-    context.user_data['target_lang'] = lang_code
-    
+
+    buttons = []
+    keys = list(LANG_MAP.keys())
+    for i in range(0, len(keys), 2):
+        row = [
+            InlineKeyboardButton(LANG_MAP[keys[i]], callback_data=f"set_{keys[i]}"),
+            InlineKeyboardButton(LANG_MAP[keys[i+1]], callback_data=f"set_{keys[i+1]}") if i+1 < len(keys) else None
+        ]
+        buttons.append([b for b in row if b])
+
     await query.edit_message_text(
-        f"✅ **টার্গেট ভাষা সফলভাবে পরিবর্তন করা হয়েছে!**\n"
-        f"এখন থেকে সব অনুবাদ **{lang_code.upper()}** ভাষায় হবে।",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back 🔙", callback_data='back_start')]]),
+        "✨ *Select Target Language*\nChoose the language you want to translate to:",
+        reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode='Markdown'
     )
 
-async def back_to_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    # রি-কল স্টার্ট ফাংশন logic
-    await start(update, context)
+    lang_code = query.data.replace('set_', '')
+    context.user_data['target'] = lang_code
+    await query.answer(f"Language set to {LANG_MAP[lang_code]}")
+    await start(update.callback_query, context) # Refresh menu
 
-async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    if user_text.startswith('/'): return
+async def translate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if not text or text.startswith('/'): return
 
-    target = context.user_data.get('target_lang', 'bn')
-    
-    # প্রসেসিং মেসেজ
-    processing_msg = await update.message.reply_text("⏳ অনুবাদ হচ্ছে বন্ধু, একটু অপেক্ষা করো...")
+    target = context.user_data.get('target', 'bn')
+    proc_msg = await update.message.reply_text("🔄 *Processing with AI...*", parse_mode='Markdown')
 
     try:
-        # Deep Translator Logic (Auto Detection is Built-in)
-        translated = GoogleTranslator(source='auto', target=target).translate(user_text)
-        
-        response = (
-            f"🌐 **Translation Successful**\n\n"
-            f"📝 **Original:** `{user_text}`\n\n"
-            f"🔄 **Translated ({target.upper()}):**\n`{translated}`\n\n"
-            f"👤 **Translator:** @ShimulXD"
-        )
-        await processing_msg.edit_text(response, parse_mode='Markdown')
-    
-    except Exception as e:
-        logging.error(f"Error: {e}")
-        await processing_msg.edit_text("❌ দুঃখিত বন্ধু! অনুবাদ করার সময় একটি টেকনিক্যাল সমস্যা হয়েছে।")
+        # Professional Translation Engine
+        translator = GoogleTranslator(source='auto', target=target)
+        translated = translator.translate(text)
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Response Construction
+        response = (
+            f"✅ *Translation Completed*\n\n"
+            f"📥 *Original:* `{text}`\n\n"
+            f"📤 *Result ({target.upper()}):*\n`{translated}`\n\n"
+            f"👤 *Translator:* @ShimulXD"
+        )
+        
+        # Audio Feature (TTS) for Premium Feel
+        keyboard = [[InlineKeyboardButton("Listen 🔊", callback_data=f"tts_{target}")]]
+        context.user_data['last_trans'] = translated
+
+        await proc_msg.edit_text(response, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+    except Exception as e:
+        await proc_msg.edit_text(f"❌ *Error:* Failed to translate. Please try again later.\n`{str(e)}`", parse_mode='Markdown')
+
+async def tts_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("Generating Audio...")
+    
+    text = context.user_data.get('last_trans')
+    lang = query.data.split('_')[1]
+
+    if text:
+        try:
+            tts = gTTS(text=text, lang=lang)
+            tts.save("trans.mp3")
+            await query.message.reply_audio(audio=open("trans.mp3", 'rb'), caption="🔊 Pronunciation")
+            os.remove("trans.mp3")
+        except:
+            await query.answer("Audio not supported for this language.", show_alert=True)
+
+# Admin Commands
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text("📊 বটটি বর্তমানে সচল আছে এবং গিটহাব অ্যাকশনে রান করছে।")
+        await update.message.reply_text(f"📊 *Admin Statistics*\n\nStatus: Online 🟢\nVersion: {VERSION}\nHost: GitHub Actions", parse_mode='Markdown')
 
 def main():
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CallbackQueryHandler(button_handler, pattern='^set_'))
-    app.add_handler(CallbackQueryHandler(back_to_start, pattern='back_start'))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, translate_text))
+    app.add_handler(CommandHandler("stats", admin_stats))
+    app.add_handler(CallbackQueryHandler(change_lang_menu, pattern='change_lang'))
+    app.add_handler(CallbackQueryHandler(set_lang, pattern='^set_'))
+    app.add_handler(CallbackQueryHandler(tts_handler, pattern='^tts_'))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, translate_handler))
 
-    print("🚀 Bot Started Successfully!")
+    print("🚀 Premium Bot is Running...")
     app.run_polling()
 
 if __name__ == '__main__':
